@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"image/color"
 	"io"
@@ -17,30 +18,56 @@ import (
 )
 
 type Device struct {
-	Name   string
-	IP     string
-	Status string
+	Name string
+	IP   string
+	IsOn bool
 }
 
 const (
-	CSE_BASE_URL            = "http://localhost:8080/cse-in"
-	CSE_RESOURCE_NAME       = "in-cse"
-	AE_RESOURCE_NAME        = "Switch-AE"
-	AE_API_ID               = "NSwitchAE"
-	CONTAINER_RESOURCE_NAME = "SwitchContainer"
-	ORIGINATOR              = "CAdmin"
-	VERSION                 = "1"
+	ACME_SERVER_URL           = "http://localhost:8080/cse-in"
+	APPLICATION_ENTITY_NAME   = "Smart-Switch"
+	CONTAINER_NAME            = "Status"
+	ORIGINATOR                = "CAdmin2"
+	TARGET_APPLICATION_ENTITY = "Light-Bulb"
+	TARGET_CONTAINER          = "Is-On"
 )
 
-func createApplicationRequest() bool {
+func checkApplicationEntityExists() bool {
 
 	client := &http.Client{}
-	var data = strings.NewReader(`{"m2m:ae": {"rn": "Notebook-AE", "api":"NnotebookAE", "rr": true, "srv": ["3"]}}`)
-	req, err := http.NewRequest("POST", "http://localhost:8080/cse-in", data)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s?fu=1&ty=2", ACME_SERVER_URL), nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	req.Header.Set("X-M2M-Origin", "CAdmin4")
+	req.Header.Set("X-M2M-Origin", ORIGINATOR)
+	req.Header.Set("X-M2M-RI", "123")
+	req.Header.Set("X-M2M-RVI", "3")
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+	bodyText, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("Status code: %s, %s\n", resp.Status, bodyText)
+	if strings.Contains(string(bodyText), APPLICATION_ENTITY_NAME) {
+		return true
+	}
+	return false
+}
+
+func createApplicationEntityRequest() bool {
+
+	client := &http.Client{}
+	var data = strings.NewReader(fmt.Sprintf(`{"m2m:ae": {"rn": "%s", "api":"NnotebookAE", "rr": true, "srv": ["3"]}}`, APPLICATION_ENTITY_NAME))
+	req, err := http.NewRequest("POST", ACME_SERVER_URL, data)
+	if err != nil {
+		log.Fatal(err)
+	}
+	req.Header.Set("X-M2M-Origin", ORIGINATOR)
 	req.Header.Set("X-M2M-RI", "123")
 	req.Header.Set("X-M2M-RVI", "3")
 	req.Header.Set("Content-Type", "application/json;ty=2")
@@ -56,7 +83,7 @@ func createApplicationRequest() bool {
 	}
 	fmt.Printf("Status code: %s, %s\n", resp.Status, bodyText)
 
-	if resp.StatusCode == 409 {
+	if resp.StatusCode == 200 || resp.StatusCode == 201 {
 		return true
 	}
 
@@ -66,12 +93,12 @@ func createApplicationRequest() bool {
 func createContainerRequest() bool {
 
 	client := &http.Client{}
-	var data = strings.NewReader(`{"m2m:cnt": {"rn" : "CONT_1"}}`)
-	req, err := http.NewRequest("POST", "http://localhost:8080/cse-in/Notebook-AE", data)
+	var data = strings.NewReader(fmt.Sprintf(`{"m2m:cnt": {"rn" : "%s"}}`, CONTAINER_NAME))
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/%s", ACME_SERVER_URL, APPLICATION_ENTITY_NAME), data)
 	if err != nil {
 		log.Fatal(err)
 	}
-	req.Header.Set("X-M2M-Origin", "CAdmin2")
+	req.Header.Set("X-M2M-Origin", ORIGINATOR)
 	req.Header.Set("X-M2M-RI", "123")
 	req.Header.Set("X-M2M-RVI", "3")
 	req.Header.Set("Content-Type", "application/json;ty=3")
@@ -87,26 +114,28 @@ func createContainerRequest() bool {
 	}
 	fmt.Printf("Status code: %s, %s\n", resp.Status, bodyText)
 
-	if resp.StatusCode == 409 {
+	if resp.StatusCode == 200 || resp.StatusCode == 201 || resp.StatusCode == 409 {
 		return true
 	}
 
 	return false
 }
 
-func changeStateRequest() bool {
+func changeStateRequest(targetURL string, state *bool) bool {
 
 	client := &http.Client{}
-	var data = strings.NewReader(`{"m2m:cin":{"con": "abc", "cnf": "text/plain:0"}}`)
-	req, err := http.NewRequest("POST", "http://localhost:8080/cse-in/Notebook-AE/CONT_1", data)
+	*state = !*state
+	var data = strings.NewReader(fmt.Sprintf(`{"m2m:cin":{"con": "%t", "cnf": "text/plain:0"}}`, *state))
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s/%s/%s", targetURL, TARGET_APPLICATION_ENTITY, TARGET_CONTAINER), data)
 	if err != nil {
 		log.Fatal(err)
 	}
-	req.Header.Set("X-M2M-Origin", "CAdmin2")
+	req.Header.Set("X-M2M-Origin", ORIGINATOR)
 	req.Header.Set("X-M2M-RI", "123")
 	req.Header.Set("X-M2M-RVI", "3")
 	req.Header.Set("Content-Type", "application/json;ty=4")
 	req.Header.Set("Accept", "application/json")
+	//fmt.Printf("%s", req)
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Fatal(err)
@@ -117,6 +146,53 @@ func changeStateRequest() bool {
 		log.Fatal(err)
 	}
 	fmt.Printf("Status code: %s, %s\n", resp.Status, bodyText)
+
+	return false
+}
+
+func getContentInstance(targetURL string, content *bool) bool {
+	client := &http.Client{}
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/%s/%s/la", targetURL, TARGET_APPLICATION_ENTITY, TARGET_CONTAINER), nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	req.Header.Set("X-M2M-Origin", ORIGINATOR)
+	req.Header.Set("X-M2M-RI", "123")
+	req.Header.Set("X-M2M-RVI", "3")
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+	bodyText, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("Status code: %s, %s\n", resp.Status, bodyText)
+
+	// Criando um mapa genérico para fazer o parse
+	var result map[string]map[string]interface{}
+
+	err = json.Unmarshal(bodyText, &result)
+	if err != nil {
+		fmt.Println("Erro ao fazer unmarshal:", err)
+		return false
+	}
+
+	// Acessando o valor de "con"
+	conVal, ok := result["m2m:cin"]["con"]
+	if ok {
+		fmt.Println("Valor de 'con':", conVal)
+		if conVal == "true" || conVal == true || conVal == "True" {
+			*content = true
+		} else {
+			*content = false
+		}
+	} else {
+		fmt.Println("'con' não encontrado.")
+	}
 
 	return false
 }
@@ -150,11 +226,20 @@ func main() {
 	//log.ReadOnly()
 
 	go func() {
-		appendLog(log, "Inicializando entidade de aplicação...")
-		if !createApplicationRequest() {
-			showErrorDialog(window, myApp, "Clique em OK para fechar o aplicativo.")
-			return
+		// Create a application entity
+		appendLog(log, "Verificando se a entidade de aplicação já existe...")
+		if !checkApplicationEntityExists() {
+			appendLog(log, "Entidade de aplicação não existe.")
+			appendLog(log, "Inicializando entidade de aplicação...")
+			if !createApplicationEntityRequest() {
+				showErrorDialog(window, myApp, "Clique em OK para fechar o aplicativo.")
+				return
+			}
+		} else {
+			appendLog(log, "Entidade de aplicação já existe.")
 		}
+
+		// Create a container
 		appendLog(log, "Entidade de aplicação criada com sucesso.")
 		appendLog(log, "Criando contêiner...")
 		if !createContainerRequest() {
@@ -166,9 +251,13 @@ func main() {
 
 	// Lista de dispositivos
 	devices := []Device{
-		{"Dispositivo A", "192.168.1.10", "Online"},
-		{"Dispositivo B", "192.168.1.11", "Offline"},
-		{"Dispositivo C", "192.168.1.12", "Online"},
+		{"Dispositivo A", "http://localhost:8081/cse-in", false},
+		//{"Dispositivo B", "192.168.1.11", false},
+		//{"Dispositivo C", "192.168.1.12", false},
+	}
+
+	for i := 0; i < len(devices); i++ {
+		getContentInstance(devices[i].IP, &devices[i].IsOn)
 	}
 
 	// Índice do dispositivo selecionado
@@ -182,7 +271,7 @@ func main() {
 		devicesList.Objects = nil // limpa a lista visual
 		deviceBoxes = []*fyne.Container{}
 		for i, d := range devices {
-			label := widget.NewLabel(fmt.Sprintf("Nome: %s | IP: %s | Status: %s", d.Name, d.IP, d.Status))
+			label := widget.NewLabel(fmt.Sprintf("Nome: %s | IP: %s | is On: %t", d.Name, d.IP, d.IsOn))
 			bg := canvas.NewRectangle(color.RGBA{95, 95, 95, 160})
 			if i == selectedIndex {
 				bg.FillColor = color.RGBA{0, 0, 0, 255}
@@ -203,8 +292,7 @@ func main() {
 	})
 
 	actionButton := widget.NewButton("Executar Ação", func() {
-		changeStateRequest()
-		appendLog(log, "Função ainda não implementada chamada.")
+		changeStateRequest(devices[selectedIndex].IP, &devices[selectedIndex].IsOn)
 	})
 
 	content := container.NewVBox(
