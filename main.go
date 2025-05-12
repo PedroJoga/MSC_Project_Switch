@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"image/color"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -15,6 +17,8 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
+
+	"github.com/grandcat/zeroconf"
 )
 
 type Device struct {
@@ -31,6 +35,52 @@ const (
 	TARGET_APPLICATION_ENTITY = "Light-Bulb"
 	TARGET_CONTAINER          = "Is-On"
 )
+
+type ServiceInfo struct {
+	IP   string
+	Port int
+}
+
+// discoverServices browses the network for mDNS services and returns a list of IP and port
+func discoverServices(serviceType, domain string) ([]ServiceInfo, error) {
+	var services []ServiceInfo
+
+	// Create a resolver instance
+	resolver, err := zeroconf.NewResolver(nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize resolver: %v", err)
+	}
+
+	// Create a channel to receive results
+	entries := make(chan *zeroconf.ServiceEntry)
+
+	// Context timeout for mDNS browsing
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	// Start mDNS service browsing
+	go func() {
+		err := resolver.Browse(ctx, serviceType, domain, entries)
+		if err != nil {
+			log.Println("Failed to browse mDNS services:", err)
+			return
+		}
+	}()
+
+	// Process entries and collect IP & Port
+	for entry := range entries {
+		// For each found service, append the IP and Port to the result slice
+		for _, ip := range entry.AddrIPv4 {
+			services = append(services, ServiceInfo{
+				IP:   ip.String(),
+				Port: entry.Port,
+			})
+		}
+	}
+
+	// Return the list of services found
+	return services, nil
+}
 
 func checkApplicationEntityExists() bool {
 
@@ -225,6 +275,9 @@ func main() {
 	log.SetMinRowsVisible(10)
 	//log.ReadOnly()
 
+	var services []ServiceInfo
+	var err error
+
 	go func() {
 		// Create a application entity
 		appendLog(log, "Verificando se a entidade de aplicação já existe...")
@@ -247,11 +300,27 @@ func main() {
 			return
 		}
 		appendLog(log, "Contêiner criado com sucesso.")
+
+		// Discover services
+		appendLog(log, "Descobrindo serviços...")
+		services, err = discoverServices("_http._tcp", "local.")
+		if err != nil {
+			showErrorDialog(window, myApp, "Erro ao descobrir serviços: "+err.Error())
+			return
+		}
+		if len(services) == 0 {
+			showErrorDialog(window, myApp, "Nenhum serviço encontrado.")
+			return
+		}
+		appendLog(log, fmt.Sprintf("Serviços encontrados: %d", len(services)))
+		for _, service := range services {
+			appendLog(log, fmt.Sprintf("Serviço encontrado: %s:%d", service.IP, service.Port))
+		}
 	}()
 
 	// Lista de dispositivos
 	devices := []Device{
-		{"Dispositivo A", "http://localhost:8081/cse-in", false},
+		{"Dispositivo A", fmt.Sprintf("%s/%s", services[0].IP, services[0].Port), false},
 		//{"Dispositivo B", "192.168.1.11", false},
 		//{"Dispositivo C", "192.168.1.12", false},
 	}
