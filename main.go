@@ -21,12 +21,6 @@ import (
 	"github.com/grandcat/zeroconf"
 )
 
-type Device struct {
-	Name string
-	IP   string
-	IsOn bool
-}
-
 const (
 	ACME_SERVER_URL           = "http://localhost:8080/cse-in"
 	APPLICATION_ENTITY_NAME   = "Smart-Switch"
@@ -39,6 +33,11 @@ const (
 type ServiceInfo struct {
 	IP   string
 	Port int
+	IsOn bool
+}
+
+func (service ServiceInfo) getAddress() string {
+	return fmt.Sprintf("http://%s:%d/cse-in", service.IP, service.Port)
 }
 
 // discoverServices browses the network for mDNS services and returns a list of IP and port
@@ -175,7 +174,7 @@ func changeStateRequest(targetURL string, state *bool) bool {
 
 	client := &http.Client{}
 	*state = !*state
-	var data = strings.NewReader(fmt.Sprintf(`{"m2m:cin":{"con": "%t", "cnf": "text/plain:0"}}`, *state))
+	var data = strings.NewReader(fmt.Sprintf(`{"m2m:cin":{"con": %t, "cnf": "text/plain:0"}}`, *state))
 	req, err := http.NewRequest("POST", fmt.Sprintf("%s/%s/%s", targetURL, TARGET_APPLICATION_ENTITY, TARGET_CONTAINER), data)
 	if err != nil {
 		log.Fatal(err)
@@ -275,9 +274,6 @@ func main() {
 	log.SetMinRowsVisible(10)
 	//log.ReadOnly()
 
-	var services []ServiceInfo
-	var err error
-
 	go func() {
 		// Create a application entity
 		appendLog(log, "Verificando se a entidade de aplicação já existe...")
@@ -300,33 +296,24 @@ func main() {
 			return
 		}
 		appendLog(log, "Contêiner criado com sucesso.")
-
-		// Discover services
-		appendLog(log, "Descobrindo serviços...")
-		services, err = discoverServices("_http._tcp", "local.")
-		if err != nil {
-			showErrorDialog(window, myApp, "Erro ao descobrir serviços: "+err.Error())
-			return
-		}
-		if len(services) == 0 {
-			showErrorDialog(window, myApp, "Nenhum serviço encontrado.")
-			return
-		}
-		appendLog(log, fmt.Sprintf("Serviços encontrados: %d", len(services)))
-		for _, service := range services {
-			appendLog(log, fmt.Sprintf("Serviço encontrado: %s:%d", service.IP, service.Port))
-		}
 	}()
 
-	// Lista de dispositivos
-	devices := []Device{
-		{"Dispositivo A", fmt.Sprintf("%s/%s", services[0].IP, services[0].Port), false},
-		//{"Dispositivo B", "192.168.1.11", false},
-		//{"Dispositivo C", "192.168.1.12", false},
+	services, err := discoverServices("_http._tcp", "local.")
+	if err != nil {
+		showErrorDialog(window, myApp, "Clique em OK para fechar o aplicativo.")
+		return
+	}
+	if len(services) == 0 {
+		showErrorDialog(window, myApp, "Nenhum serviço encontrado.")
+		return
 	}
 
-	for i := 0; i < len(devices); i++ {
-		getContentInstance(devices[i].IP, &devices[i].IsOn)
+	for i := 0; i < len(services); i++ {
+		fmt.Printf("Service %d: IP: %s, Port: %d\n", i+1, services[i].IP, services[i].Port)
+	}
+
+	for i := 0; i < len(services); i++ {
+		getContentInstance(services[i].getAddress(), &services[i].IsOn)
 	}
 
 	// Índice do dispositivo selecionado
@@ -339,8 +326,8 @@ func main() {
 	updateDeviceList := func() {
 		devicesList.Objects = nil // limpa a lista visual
 		deviceBoxes = []*fyne.Container{}
-		for i, d := range devices {
-			label := widget.NewLabel(fmt.Sprintf("Nome: %s | IP: %s | is On: %t", d.Name, d.IP, d.IsOn))
+		for i, d := range services {
+			label := widget.NewLabel(fmt.Sprintf("Nome: %s | IP: %s | is On: %t", d.getAddress(), d.IP, d.IsOn))
 			bg := canvas.NewRectangle(color.RGBA{95, 95, 95, 160})
 			if i == selectedIndex {
 				bg.FillColor = color.RGBA{0, 0, 0, 255}
@@ -355,13 +342,13 @@ func main() {
 	updateDeviceList()
 
 	switchButton := widget.NewButton("Trocar Destaque", func() {
-		selectedIndex = (selectedIndex + 1) % len(devices)
+		selectedIndex = (selectedIndex + 1) % len(services)
 		updateDeviceList()
-		appendLog(log, fmt.Sprintf("Dispositivo selecionado: %s", devices[selectedIndex].Name))
+		appendLog(log, fmt.Sprintf("Dispositivo selecionado: %s", services[selectedIndex].getAddress()))
 	})
 
 	actionButton := widget.NewButton("Executar Ação", func() {
-		changeStateRequest(devices[selectedIndex].IP, &devices[selectedIndex].IsOn)
+		changeStateRequest(services[selectedIndex].getAddress(), &services[selectedIndex].IsOn)
 	})
 
 	content := container.NewVBox(
