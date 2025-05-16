@@ -298,24 +298,6 @@ func main() {
 		appendLog(log, "Contêiner criado com sucesso.")
 	}()
 
-	services, err := discoverServices("_http._tcp", "local.")
-	if err != nil {
-		showErrorDialog(window, myApp, "Clique em OK para fechar o aplicativo.")
-		return
-	}
-	if len(services) == 0 {
-		showErrorDialog(window, myApp, "Nenhum serviço encontrado.")
-		return
-	}
-
-	for i := 0; i < len(services); i++ {
-		fmt.Printf("Service %d: IP: %s, Port: %d\n", i+1, services[i].IP, services[i].Port)
-	}
-
-	for i := 0; i < len(services); i++ {
-		getContentInstance(services[i].getAddress(), &services[i].IsOn)
-	}
-
 	// Índice do dispositivo selecionado
 	selectedIndex := 0
 
@@ -323,7 +305,29 @@ func main() {
 	var deviceBoxes []*fyne.Container
 	devicesList := container.NewVBox()
 
+	var services []ServiceInfo
+	var err error
+
 	updateDeviceList := func() {
+		// Procurar serviços
+		services, err = discoverServices("_http._tcp", "local.")
+		if err != nil {
+			showErrorDialog(window, myApp, "Erro ao procurar serviços")
+			return
+		}
+		if len(services) == 0 {
+			showErrorDialog(window, myApp, "Nenhum serviço encontrado.")
+			return
+		}
+
+		for i := 0; i < len(services); i++ {
+			fmt.Printf("Service %d: IP: %s, Port: %d\n", i+1, services[i].IP, services[i].Port)
+		}
+
+		for i := 0; i < len(services); i++ {
+			getContentInstance(services[i].getAddress(), &services[i].IsOn)
+		}
+
 		devicesList.Objects = nil // limpa a lista visual
 		deviceBoxes = []*fyne.Container{}
 		for i, d := range services {
