@@ -274,6 +274,57 @@ func main() {
 	log.SetMinRowsVisible(10)
 	//log.ReadOnly()
 
+	var services []ServiceInfo
+	var err error
+
+	// Índice do dispositivo selecionado
+	selectedIndex := 0
+
+	// Widget para exibir a lista visualmente
+	var deviceBoxes []*fyne.Container
+	devicesList := container.NewVBox()
+
+	updateDeviceList := func() {
+
+		devicesList.Objects = nil // limpa a lista visual
+		deviceBoxes = []*fyne.Container{}
+		for i, d := range services {
+			label := widget.NewLabel(fmt.Sprintf("Nome: %s | IP: %s | is On: %t", d.getAddress(), d.IP, d.IsOn))
+			bg := canvas.NewRectangle(color.RGBA{95, 95, 95, 160})
+			if i == selectedIndex {
+				bg.FillColor = color.RGBA{0, 0, 0, 255}
+			}
+			box := container.NewStack(bg, label)
+			deviceBoxes = append(deviceBoxes, box)
+			devicesList.Add(box)
+		}
+		devicesList.Refresh()
+	}
+
+	findDevices := func() {
+		// Procurar serviços
+		appendLog(log, "Procurar dispositivos...")
+		services, err = discoverServices("_http._tcp", "local.")
+		if err != nil {
+			showErrorDialog(window, myApp, "Erro ao procurar serviços")
+			return
+		}
+		if len(services) == 0 {
+			appendLog(log, "Nenhum dispositivo encontrado")
+			showErrorDialog(window, myApp, "Nenhum serviço encontrado.")
+			return
+		}
+
+		appendLog(log, fmt.Sprintf("%d dispositivos encontrado(s)", len(services)))
+		for i := 0; i < len(services); i++ {
+			fmt.Printf("Service %d: IP: %s, Port: %d\n", i+1, services[i].IP, services[i].Port)
+			getContentInstance(services[i].getAddress(), &services[i].IsOn)
+		}
+
+		updateDeviceList()
+
+	}
+
 	go func() {
 		// Create a application entity
 		appendLog(log, "Verificando se a entidade de aplicação já existe...")
@@ -296,54 +347,16 @@ func main() {
 			return
 		}
 		appendLog(log, "Contêiner criado com sucesso.")
+
+		// Procurar serviços
+		findDevices()
 	}()
 
-	// Índice do dispositivo selecionado
-	selectedIndex := 0
-
-	// Widget para exibir a lista visualmente
-	var deviceBoxes []*fyne.Container
-	devicesList := container.NewVBox()
-
-	var services []ServiceInfo
-	var err error
-
-	updateDeviceList := func() {
-		// Procurar serviços
-		services, err = discoverServices("_http._tcp", "local.")
-		if err != nil {
-			showErrorDialog(window, myApp, "Erro ao procurar serviços")
-			return
-		}
-		if len(services) == 0 {
-			showErrorDialog(window, myApp, "Nenhum serviço encontrado.")
-			return
-		}
-
-		for i := 0; i < len(services); i++ {
-			fmt.Printf("Service %d: IP: %s, Port: %d\n", i+1, services[i].IP, services[i].Port)
-		}
-
-		for i := 0; i < len(services); i++ {
-			getContentInstance(services[i].getAddress(), &services[i].IsOn)
-		}
-
-		devicesList.Objects = nil // limpa a lista visual
-		deviceBoxes = []*fyne.Container{}
-		for i, d := range services {
-			label := widget.NewLabel(fmt.Sprintf("Nome: %s | IP: %s | is On: %t", d.getAddress(), d.IP, d.IsOn))
-			bg := canvas.NewRectangle(color.RGBA{95, 95, 95, 160})
-			if i == selectedIndex {
-				bg.FillColor = color.RGBA{0, 0, 0, 255}
-			}
-			box := container.NewStack(bg, label)
-			deviceBoxes = append(deviceBoxes, box)
-			devicesList.Add(box)
-		}
-		devicesList.Refresh()
-	}
-
 	updateDeviceList()
+
+	findButton := widget.NewButton("Procurar dispositivos", func() {
+		findDevices()
+	})
 
 	switchButton := widget.NewButton("Trocar Destaque", func() {
 		selectedIndex = (selectedIndex + 1) % len(services)
@@ -353,10 +366,12 @@ func main() {
 
 	actionButton := widget.NewButton("Executar Ação", func() {
 		changeStateRequest(services[selectedIndex].getAddress(), &services[selectedIndex].IsOn)
+		updateDeviceList()
 	})
 
 	content := container.NewVBox(
 		devicesList,
+		findButton,
 		switchButton,
 		actionButton,
 		log,
