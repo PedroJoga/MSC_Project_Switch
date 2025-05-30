@@ -31,6 +31,7 @@ const (
 )
 
 type ServiceInfo struct {
+	Name string
 	IP   string
 	Port int
 	IsOn bool
@@ -66,11 +67,10 @@ func discoverServices(serviceType, domain string) ([]ServiceInfo, error) {
 		}
 	}()
 
-	// Process entries and collect IP & Port
 	for entry := range entries {
-		// For each found service, append the IP and Port to the result slice
 		for _, ip := range entry.AddrIPv4 {
 			services = append(services, ServiceInfo{
+				Name: entry.Instance,
 				IP:   ip.String(),
 				Port: entry.Port,
 			})
@@ -289,10 +289,10 @@ func main() {
 		devicesList.Objects = nil // limpa a lista visual
 		deviceBoxes = []*fyne.Container{}
 		for i, d := range services {
-			label := widget.NewLabel(fmt.Sprintf("Nome: %s | IP: %s | is On: %t", d.getAddress(), d.IP, d.IsOn))
-			bg := canvas.NewRectangle(color.RGBA{95, 95, 95, 160})
+			label := widget.NewLabel(fmt.Sprintf("Nome: %s | IP: %s:%d | is On: %t", d.Name, d.IP, d.Port, d.IsOn))
+			bg := canvas.NewRectangle(color.RGBA{0, 0, 0, 255})
 			if i == selectedIndex {
-				bg.FillColor = color.RGBA{0, 0, 0, 255}
+				bg.FillColor = color.RGBA{95, 95, 95, 160}
 			}
 			box := container.NewStack(bg, label)
 			deviceBoxes = append(deviceBoxes, box)
