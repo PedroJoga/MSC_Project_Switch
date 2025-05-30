@@ -79,6 +79,7 @@ func discoverServices(serviceType, domain string) ([]ServiceInfo, error) {
 
 	// Return the list of services found
 	return services, nil
+
 }
 
 func checkApplicationEntityExists() bool {
@@ -355,7 +356,7 @@ func main() {
 	updateDeviceList()
 
 	findButton := widget.NewButton("Procurar dispositivos", func() {
-		findDevices()
+		go findDevices()
 	})
 
 	switchButton := widget.NewButton("Trocar Destaque", func() {
