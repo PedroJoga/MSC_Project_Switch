@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -41,53 +42,102 @@ func (service ServiceInfo) getAddress() string {
 	return fmt.Sprintf("http://%s:%d/cse-in", service.IP, service.Port)
 }
 
-// discoverServices browses the network for mDNS services and returns a list of IP and port
-func discoverServices(serviceType, domain string) ([]ServiceInfo, error) {
-	var services []ServiceInfo
-
+func discoverServices(serviceType, domain string, servicesChannel chan ServiceInfo) error {
 	// Create a resolver instance
 	resolver, err := zeroconf.NewResolver(nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize resolver: %v", err)
+		close(servicesChannel)
+		return fmt.Errorf("failed to initialize resolver: %v", err)
 	}
 
-	// Create a channel to receive results
-	entries := make(chan *zeroconf.ServiceEntry)
+	// Create a channel to receive results from zeroconf
+	entries := make(chan *zeroconf.ServiceEntry, 10) // Buffered to prevent blocking
 
 	// Context timeout for mDNS browsing
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*8)
 
-	// Start mDNS service browsing
+	// zeroConf might try to close channel at the same time as us so we should do it safely
+	var channelClosed bool
+	var mu sync.Mutex
+
+	safeCloseChannel := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if !channelClosed {
+			close(servicesChannel)
+			channelClosed = true
+		}
+	}
+
+	// Process entries and send them to servicesChannel
+	go func(results <-chan *zeroconf.ServiceEntry) {
+		defer safeCloseChannel()
+		for entry := range results {
+			log.Printf("Found service: %s at port %d", entry.Instance, entry.Port)
+			for _, ip := range entry.AddrIPv4 {
+				service := ServiceInfo{
+					Name: entry.Instance,
+					IP:   ip.String(),
+					Port: entry.Port,
+				}
+				// Send each discovered service immediately
+				servicesChannel <- service
+			}
+		}
+		log.Println("Service discovery completed.")
+	}(entries)
+
+	// Start mDNS service browsing in a goroutine to avoid blocking
 	go func() {
+		defer func() {
+			// Handle any panics from the zeroconf library
+			if r := recover(); r != nil {
+				log.Printf("Recovered from zeroconf panic: %v", r)
+				safeCloseChannel()
+			}
+		}()
+
 		err := resolver.Browse(ctx, serviceType, domain, entries)
 		if err != nil {
-			log.Println("Failed to browse mDNS services:", err)
-			return
+			log.Printf("Browse error: %v", err)
 		}
 	}()
 
-	for entry := range entries {
-		for _, ip := range entry.AddrIPv4 {
-			services = append(services, ServiceInfo{
-				Name: entry.Instance,
-				IP:   ip.String(),
-				Port: entry.Port,
-			})
+	// Wait for context to be done, then cleanup
+	go func() {
+		<-ctx.Done()
+		cancel() // Cancel the context
+
+		// Give a moment for cleanup, then force close if needed
+		time.Sleep(500 * time.Millisecond)
+
+		// Close entries channel safely
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("Recovered from channel close panic: %v", r)
+			}
+		}()
+
+		// Try to close entries channel - might already be closed by zeroconf
+		select {
+		case <-entries:
+			// Channel already closed
+		default:
+			close(entries)
 		}
-	}
 
-	// Return the list of services found
-	return services, nil
+		safeCloseChannel()
+	}()
 
+	return nil
 }
 
 func checkApplicationEntityExists() bool {
-
-	client := &http.Client{}
+	client := &http.Client{Timeout: 5 * time.Second}
 	req, err := http.NewRequest("GET", fmt.Sprintf("%s?fu=1&ty=2", ACME_SERVER_URL), nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error creating request: %v", err)
+		return false
 	}
 	req.Header.Set("X-M2M-Origin", ORIGINATOR)
 	req.Header.Set("X-M2M-RI", "123")
@@ -95,27 +145,26 @@ func checkApplicationEntityExists() bool {
 	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error checking application entity: %v", err)
+		return false
 	}
 	defer resp.Body.Close()
 	bodyText, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error reading response: %v", err)
+		return false
 	}
 	fmt.Printf("Status code: %s, %s\n", resp.Status, bodyText)
-	if strings.Contains(string(bodyText), APPLICATION_ENTITY_NAME) {
-		return true
-	}
-	return false
+	return strings.Contains(string(bodyText), APPLICATION_ENTITY_NAME)
 }
 
 func createApplicationEntityRequest() bool {
-
-	client := &http.Client{}
+	client := &http.Client{Timeout: 5 * time.Second}
 	var data = strings.NewReader(fmt.Sprintf(`{"m2m:ae": {"rn": "%s", "api":"NnotebookAE", "rr": true, "srv": ["3"]}}`, APPLICATION_ENTITY_NAME))
 	req, err := http.NewRequest("POST", ACME_SERVER_URL, data)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error creating request: %v", err)
+		return false
 	}
 	req.Header.Set("X-M2M-Origin", ORIGINATOR)
 	req.Header.Set("X-M2M-RI", "123")
@@ -124,29 +173,27 @@ func createApplicationEntityRequest() bool {
 	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error creating application entity: %v", err)
+		return resp.StatusCode == 403
 	}
 	defer resp.Body.Close()
 	bodyText, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error reading response: %v", err)
+		return false
 	}
 	fmt.Printf("Status code: %s, %s\n", resp.Status, bodyText)
 
-	if resp.StatusCode == 200 || resp.StatusCode == 201 {
-		return true
-	}
-
-	return false
+	return resp.StatusCode == 200 || resp.StatusCode == 201
 }
 
 func createContainerRequest() bool {
-
-	client := &http.Client{}
+	client := &http.Client{Timeout: 5 * time.Second}
 	var data = strings.NewReader(fmt.Sprintf(`{"m2m:cnt": {"rn" : "%s"}}`, CONTAINER_NAME))
 	req, err := http.NewRequest("POST", fmt.Sprintf("%s/%s", ACME_SERVER_URL, APPLICATION_ENTITY_NAME), data)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error creating request: %v", err)
+		return false
 	}
 	req.Header.Set("X-M2M-Origin", ORIGINATOR)
 	req.Header.Set("X-M2M-RI", "123")
@@ -155,56 +202,55 @@ func createContainerRequest() bool {
 	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error creating container: %v", err)
+		return false
 	}
 	defer resp.Body.Close()
 	bodyText, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error reading response: %v", err)
+		return false
 	}
 	fmt.Printf("Status code: %s, %s\n", resp.Status, bodyText)
 
-	if resp.StatusCode == 200 || resp.StatusCode == 201 || resp.StatusCode == 409 {
-		return true
-	}
-
-	return false
+	return resp.StatusCode == 200 || resp.StatusCode == 201 || resp.StatusCode == 409
 }
 
 func changeStateRequest(targetURL string, state *bool) bool {
-
-	client := &http.Client{}
+	client := &http.Client{Timeout: 5 * time.Second}
 	*state = !*state
 	var data = strings.NewReader(fmt.Sprintf(`{"m2m:cin":{"con": %t, "cnf": "text/plain:0"}}`, *state))
 	req, err := http.NewRequest("POST", fmt.Sprintf("%s/%s/%s", targetURL, TARGET_APPLICATION_ENTITY, TARGET_CONTAINER), data)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error creating request: %v", err)
+		return false
 	}
 	req.Header.Set("X-M2M-Origin", ORIGINATOR)
 	req.Header.Set("X-M2M-RI", "123")
 	req.Header.Set("X-M2M-RVI", "3")
 	req.Header.Set("Content-Type", "application/json;ty=4")
 	req.Header.Set("Accept", "application/json")
-	//fmt.Printf("%s", req)
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error changing state: %v", err)
+		return false
 	}
 	defer resp.Body.Close()
 	bodyText, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error reading response: %v", err)
+		return false
 	}
 	fmt.Printf("Status code: %s, %s\n", resp.Status, bodyText)
-
-	return false
+	return resp.StatusCode == 200 || resp.StatusCode == 201
 }
 
 func getContentInstance(targetURL string, content *bool) bool {
-	client := &http.Client{}
+	client := &http.Client{Timeout: 5 * time.Second}
 	req, err := http.NewRequest("GET", fmt.Sprintf("%s/%s/%s/la", targetURL, TARGET_APPLICATION_ENTITY, TARGET_CONTAINER), nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error creating request: %v", err)
+		return false
 	}
 	req.Header.Set("X-M2M-Origin", ORIGINATOR)
 	req.Header.Set("X-M2M-RI", "123")
@@ -212,38 +258,47 @@ func getContentInstance(targetURL string, content *bool) bool {
 	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error getting content: %v", err)
+		return false
 	}
 	defer resp.Body.Close()
 	bodyText, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error reading response: %v", err)
+		return false
 	}
 
 	fmt.Printf("Status code: %s, %s\n", resp.Status, bodyText)
 
-	// Criando um mapa genérico para fazer o parse
-	var result map[string]map[string]interface{}
+	// Only process if we got a successful response
+	if resp.StatusCode != 200 {
+		return false
+	}
 
+	var result map[string]map[string]interface{}
 	err = json.Unmarshal(bodyText, &result)
 	if err != nil {
 		fmt.Println("Erro ao fazer unmarshal:", err)
 		return false
 	}
 
-	// Acessando o valor de "con"
-	conVal, ok := result["m2m:cin"]["con"]
-	if ok {
-		fmt.Println("Valor de 'con':", conVal)
-		if conVal == "true" || conVal == true || conVal == "True" {
-			*content = true
-		} else {
-			*content = false
+	// Check if the structure exists before accessing
+	if cinData, exists := result["m2m:cin"]; exists {
+		if conVal, ok := cinData["con"]; ok {
+			fmt.Println("Valor de 'con':", conVal)
+			switch v := conVal.(type) {
+			case bool:
+				*content = v
+			case string:
+				*content = v == "true" || v == "True"
+			default:
+				*content = false
+			}
+			return true
 		}
-	} else {
-		fmt.Println("'con' não encontrado.")
 	}
 
+	fmt.Println("'con' não encontrado.")
 	return false
 }
 
@@ -269,31 +324,26 @@ func appendLog(log *widget.Entry, msg string) {
 func main() {
 	myApp := app.New()
 	window := myApp.NewWindow("Registro Switch AE/Container")
-	window.Resize(fyne.NewSize(600, 400))
+	window.Resize(fyne.NewSize(700, 500))
 
-	log := widget.NewMultiLineEntry()
-	log.SetMinRowsVisible(10)
-	//log.ReadOnly()
+	logWidget := widget.NewMultiLineEntry()
+	logWidget.SetMinRowsVisible(8)
+	logWidget.Wrapping = fyne.TextWrapWord
 
 	var services []ServiceInfo
-	var err error
-
-	// Índice do dispositivo selecionado
 	selectedIndex := 0
 
-	// Widget para exibir a lista visualmente
 	var deviceBoxes []*fyne.Container
 	devicesList := container.NewVBox()
 
 	updateDeviceList := func() {
-
-		devicesList.Objects = nil // limpa a lista visual
+		devicesList.Objects = nil
 		deviceBoxes = []*fyne.Container{}
 		for i, d := range services {
 			label := widget.NewLabel(fmt.Sprintf("Nome: %s | IP: %s:%d | is On: %t", d.Name, d.IP, d.Port, d.IsOn))
-			bg := canvas.NewRectangle(color.RGBA{0, 0, 0, 255})
+			bg := canvas.NewRectangle(color.RGBA{200, 200, 200, 100})
 			if i == selectedIndex {
-				bg.FillColor = color.RGBA{95, 95, 95, 160}
+				bg.FillColor = color.RGBA{100, 150, 255, 200}
 			}
 			box := container.NewStack(bg, label)
 			deviceBoxes = append(deviceBoxes, box)
@@ -303,79 +353,137 @@ func main() {
 	}
 
 	findDevices := func() {
-		// Procurar serviços
-		appendLog(log, "Procurar dispositivos...")
-		services, err = discoverServices("_http._tcp", "local.")
-		if err != nil {
-			showErrorDialog(window, myApp, "Erro ao procurar serviços")
-			return
-		}
-		if len(services) == 0 {
-			appendLog(log, "Nenhum dispositivo encontrado")
-			showErrorDialog(window, myApp, "Nenhum serviço encontrado.")
-			return
-		}
-
-		appendLog(log, fmt.Sprintf("%d dispositivos encontrado(s)", len(services)))
-		for i := 0; i < len(services); i++ {
-			fmt.Printf("Service %d: IP: %s, Port: %d\n", i+1, services[i].IP, services[i].Port)
-			getContentInstance(services[i].getAddress(), &services[i].IsOn)
-		}
-
+		services = []ServiceInfo{} // Clear existing services
 		updateDeviceList()
 
+		appendLog(logWidget, "Procurando dispositivos...")
+
+		// Create a new channel for each discovery
+		servicesChannel := make(chan ServiceInfo, 10) // Buffered channel
+
+		// Start service discovery
+		go func() {
+			err := discoverServices("_http._tcp", "local.", servicesChannel)
+			if err != nil {
+				appendLog(logWidget, fmt.Sprintf("Erro na descoberta: %v", err))
+				return
+			}
+		}()
+
+		// Handle incoming services
+		go func() {
+			deviceCount := 0
+			discoveryTimeout := time.After(10 * time.Second) // Reduced timeout to match discovery
+
+			for {
+				select {
+				case service, ok := <-servicesChannel:
+					if !ok {
+						// Channel closed, discovery completed
+						if deviceCount == 0 {
+							appendLog(logWidget, "Nenhum dispositivo encontrado")
+						} else {
+							appendLog(logWidget, fmt.Sprintf("Descoberta concluída. Total: %d dispositivos", deviceCount))
+						}
+						return
+					}
+
+					deviceCount++
+
+					// Filter for LAMP services or relevant services
+					if strings.Contains(strings.ToLower(service.Name), "lamp") || service.Port == 8081 {
+						// Get the current state of the device
+						getContentInstance(service.getAddress(), &service.IsOn)
+
+						// Add to services list
+						services = append(services, service)
+
+						// Update UI
+						appendLog(logWidget, fmt.Sprintf("Dispositivo %d encontrado: %s (%s:%d)", deviceCount, service.Name, service.IP, service.Port))
+						updateDeviceList()
+
+						log.Printf("Service %d: Name: %s, IP: %s, Port: %d\n", deviceCount, service.Name, service.IP, service.Port)
+					} else {
+						appendLog(logWidget, fmt.Sprintf("Serviço ignorado: %s (%s:%d)", service.Name, service.IP, service.Port))
+					}
+
+				case <-discoveryTimeout:
+					// Timeout reached
+					if deviceCount == 0 {
+						appendLog(logWidget, "Timeout: Nenhum dispositivo encontrado")
+					} else {
+						appendLog(logWidget, fmt.Sprintf("Timeout: Descoberta concluída. Total: %d dispositivos", deviceCount))
+					}
+					return
+				}
+			}
+		}()
 	}
 
+	// Initialize application entity and container
 	go func() {
-		// Create a application entity
-		appendLog(log, "Verificando se a entidade de aplicação já existe...")
+		appendLog(logWidget, "Verificando se a entidade de aplicação já existe...")
 		if !checkApplicationEntityExists() {
-			appendLog(log, "Entidade de aplicação não existe.")
-			appendLog(log, "Inicializando entidade de aplicação...")
+			appendLog(logWidget, "Entidade de aplicação não existe.")
+			appendLog(logWidget, "Inicializando entidade de aplicação...")
 			if !createApplicationEntityRequest() {
-				showErrorDialog(window, myApp, "Clique em OK para fechar o aplicativo.")
+				showErrorDialog(window, myApp, "Falha ao criar entidade de aplicação. Clique em OK para fechar.")
 				return
 			}
 		} else {
-			appendLog(log, "Entidade de aplicação já existe.")
+			appendLog(logWidget, "Entidade de aplicação já existe.")
 		}
 
-		// Create a container
-		appendLog(log, "Entidade de aplicação criada com sucesso.")
-		appendLog(log, "Criando contêiner...")
+		appendLog(logWidget, "Criando contêiner...")
 		if !createContainerRequest() {
-			showErrorDialog(window, myApp, "Clique em OK para fechar o aplicativo.")
+			showErrorDialog(window, myApp, "Falha ao criar contêiner. Clique em OK para fechar.")
 			return
 		}
-		appendLog(log, "Contêiner criado com sucesso.")
+		appendLog(logWidget, "Contêiner criado com sucesso.")
 
-		// Procurar serviços
+		// Auto-discover devices on startup
 		findDevices()
 	}()
 
 	updateDeviceList()
 
 	findButton := widget.NewButton("Procurar dispositivos", func() {
-		go findDevices()
+		findDevices()
 	})
 
 	switchButton := widget.NewButton("Trocar Destaque", func() {
+		if len(services) <= 0 {
+			showErrorDialog(window, myApp, "Nenhum serviço na lista")
+			return
+		}
+
 		selectedIndex = (selectedIndex + 1) % len(services)
 		updateDeviceList()
-		appendLog(log, fmt.Sprintf("Dispositivo selecionado: %s", services[selectedIndex].getAddress()))
+		appendLog(logWidget, fmt.Sprintf("Dispositivo selecionado: %s", services[selectedIndex].Name))
 	})
 
 	actionButton := widget.NewButton("Executar Ação", func() {
-		changeStateRequest(services[selectedIndex].getAddress(), &services[selectedIndex].IsOn)
+		if len(services) <= 0 {
+			showErrorDialog(window, myApp, "Nenhum serviço na lista")
+			return
+		}
+
+		appendLog(logWidget, fmt.Sprintf("Executando ação no dispositivo: %s", services[selectedIndex].Name))
+		if changeStateRequest(services[selectedIndex].getAddress(), &services[selectedIndex].IsOn) {
+			appendLog(logWidget, "Ação executada com sucesso")
+		} else {
+			appendLog(logWidget, "Falha ao executar ação")
+		}
 		updateDeviceList()
 	})
 
 	content := container.NewVBox(
+		widget.NewLabel("Dispositivos Descobertos:"),
 		devicesList,
-		findButton,
-		switchButton,
-		actionButton,
-		log,
+		container.NewHBox(findButton, switchButton, actionButton),
+		widget.NewSeparator(),
+		widget.NewLabel("Log:"),
+		logWidget,
 	)
 
 	window.SetContent(content)
