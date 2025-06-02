@@ -325,6 +325,7 @@ func main() {
 	myApp := app.New()
 	window := myApp.NewWindow("Registro Switch AE/Container")
 	window.Resize(fyne.NewSize(700, 500))
+	var init time.Time
 
 	logWidget := widget.NewMultiLineEntry()
 	logWidget.SetMinRowsVisible(8)
@@ -358,6 +359,8 @@ func main() {
 
 		appendLog(logWidget, "Procurando dispositivos...")
 
+		init = time.Now()
+
 		// Create a new channel for each discovery
 		servicesChannel := make(chan ServiceInfo, 10) // Buffered channel
 
@@ -365,7 +368,7 @@ func main() {
 		go func() {
 			err := discoverServices("_http._tcp", "local.", servicesChannel)
 			if err != nil {
-				appendLog(logWidget, fmt.Sprintf("Erro na descoberta: %v", err))
+				appendLog(logWidget, fmt.Sprintf("Erro na descoberta: %v (%dms)", err, time.Since(init).Milliseconds()))
 				return
 			}
 		}()
@@ -391,7 +394,7 @@ func main() {
 					deviceCount++
 
 					// Filter for LAMP services or relevant services
-					if strings.Contains(strings.ToLower(service.Name), "lamp") || service.Port == 8081 {
+					if strings.Contains(strings.ToLower(service.Name), "lamp") {
 						// Get the current state of the device
 						getContentInstance(service.getAddress(), &service.IsOn)
 
@@ -399,7 +402,7 @@ func main() {
 						services = append(services, service)
 
 						// Update UI
-						appendLog(logWidget, fmt.Sprintf("Dispositivo %d encontrado: %s (%s:%d)", deviceCount, service.Name, service.IP, service.Port))
+						appendLog(logWidget, fmt.Sprintf("Dispositivo %d encontrado: %s (%s:%d) (%dms)", deviceCount, service.Name, service.IP, service.Port, time.Since(init).Milliseconds()))
 						updateDeviceList()
 
 						log.Printf("Service %d: Name: %s, IP: %s, Port: %d\n", deviceCount, service.Name, service.IP, service.Port)
@@ -423,23 +426,26 @@ func main() {
 	// Initialize application entity and container
 	go func() {
 		appendLog(logWidget, "Verificando se a entidade de aplicação já existe...")
+		init = time.Now()
 		if !checkApplicationEntityExists() {
-			appendLog(logWidget, "Entidade de aplicação não existe.")
+			appendLog(logWidget, fmt.Sprintf("Entidade de aplicação não existe. (%dms)", time.Since(init).Milliseconds()))
 			appendLog(logWidget, "Inicializando entidade de aplicação...")
+			init = time.Now()
 			if !createApplicationEntityRequest() {
-				showErrorDialog(window, myApp, "Falha ao criar entidade de aplicação. Clique em OK para fechar.")
+				showErrorDialog(window, myApp, fmt.Sprintf("Falha ao criar entidade de aplicação. Clique em OK para fechar. (%dms)", time.Since(init).Milliseconds()))
 				return
 			}
 		} else {
-			appendLog(logWidget, "Entidade de aplicação já existe.")
+			appendLog(logWidget, fmt.Sprintf("Entidade de aplicação já existe. (%dms)", time.Since(init).Milliseconds()))
 		}
 
 		appendLog(logWidget, "Criando contêiner...")
+		init = time.Now()
 		if !createContainerRequest() {
-			showErrorDialog(window, myApp, "Falha ao criar contêiner. Clique em OK para fechar.")
+			showErrorDialog(window, myApp, fmt.Sprintf("Falha ao criar contêiner. Clique em OK para fechar. (%dms)", time.Since(init).Milliseconds()))
 			return
 		}
-		appendLog(logWidget, "Contêiner criado com sucesso.")
+		appendLog(logWidget, fmt.Sprintf("Contêiner criado com sucesso. (%dms)", time.Since(init).Milliseconds()))
 
 		// Auto-discover devices on startup
 		findDevices()
@@ -469,10 +475,11 @@ func main() {
 		}
 
 		appendLog(logWidget, fmt.Sprintf("Executando ação no dispositivo: %s", services[selectedIndex].Name))
+		init = time.Now()
 		if changeStateRequest(services[selectedIndex].getAddress(), &services[selectedIndex].IsOn) {
-			appendLog(logWidget, "Ação executada com sucesso")
+			appendLog(logWidget, fmt.Sprintf("Ação executada com sucesso (%dms)", time.Since(init).Milliseconds()))
 		} else {
-			appendLog(logWidget, "Falha ao executar ação")
+			appendLog(logWidget, fmt.Sprintf("Falha ao executar ação (%dms)", time.Since(init).Milliseconds()))
 		}
 		updateDeviceList()
 	})
