@@ -15,6 +15,7 @@ import (
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/grandcat/zeroconf"
@@ -219,10 +220,27 @@ func getContentInstance(targetURL string, content *bool) bool {
 	return false
 }
 
+func showErrorDialog(win fyne.Window, app fyne.App, message string) {
+	dialog.ShowCustomConfirm(
+		"Error",
+		"OK",
+		"",
+		widget.NewLabel(message),
+		func(confirm bool) {
+			if confirm {
+				app.Quit()
+			}
+		},
+		win,
+	)
+}
+
 func main() {
 	myApp := app.New()
 	window := myApp.NewWindow("Registro Switch AE/Container")
 	window.Resize(fyne.NewSize(600, 400))
+
+	var init time.Time // for metrics
 
 	logWidget := widget.NewMultiLineEntry()
 	logWidget.SetMinRowsVisible(8)
@@ -255,6 +273,7 @@ func main() {
 	}
 
 	findDevices := func() {
+		init = time.Now()
 		services = []ServiceInfo{} // Clear existing
 		updateDeviceList()
 		appendLog("Procurando dispositivos...")
@@ -262,7 +281,7 @@ func main() {
 		// Start non-blocking discovery with dynamic updates
 		findServices(func(service ServiceInfo) {
 			// This callback runs for each discovered service
-			appendLog(fmt.Sprintf("Dispositivo encontrado: %s (%s:%d)", service.Name, service.IP, service.Port))
+			appendLog(fmt.Sprintf("Dispositivo encontrado: %s (%s:%d) (%d ms)", service.Name, service.IP, service.Port, time.Since(init).Milliseconds()))
 			services = append(services, service)
 			updateDeviceList() // Update UI immediately
 		})
@@ -270,25 +289,26 @@ func main() {
 
 	// Initialize application entity and container
 	go func() {
+		init = time.Now()
 		appendLog("Verificando se a entidade de aplicação já existe...")
 		if !checkApplicationEntityExists() {
-			appendLog("Entidade de aplicação não existe.")
+			appendLog(fmt.Sprintf("Entidade de aplicação não existe. (%dms)", time.Since(init).Milliseconds()))
 			appendLog("Inicializando entidade de aplicação...")
 			if !createApplicationEntityRequest() {
-				appendLog("Falha ao criar entidade de aplicação.")
+				showErrorDialog(window, myApp, fmt.Sprintf("Falha ao criar entidade de aplicação. Clique em OK para fechar. (%dms)", time.Since(init).Milliseconds()))
 				return
 			}
 		} else {
-			appendLog("Entidade de aplicação já existe.")
+			appendLog(fmt.Sprintf("Entidade de aplicação já existe. (%dms)", time.Since(init).Milliseconds()))
 		}
 
 		appendLog("Criando contêiner...")
+		init = time.Now()
 		if !createContainerRequest() {
-			appendLog("Falha ao criar contêiner.")
+			showErrorDialog(window, myApp, fmt.Sprintf("Falha ao criar contêiner. Clique em OK para fechar. (%dms)", time.Since(init).Milliseconds()))
 			return
 		}
-		appendLog("Contêiner criado com sucesso.")
-
+		appendLog(fmt.Sprintf("Contêiner criado com sucesso. (%dms)", time.Since(init).Milliseconds()))
 		// Auto-discover devices on startup
 		findDevices()
 	}()
@@ -317,7 +337,12 @@ func main() {
 		}
 
 		appendLog(fmt.Sprintf("Executando ação no dispositivo: %s", services[selectedIndex].Name))
-		changeStateRequest(services[selectedIndex].getAddress(), &services[selectedIndex].IsOn)
+		init = time.Now()
+		if changeStateRequest(services[selectedIndex].getAddress(), &services[selectedIndex].IsOn) {
+			appendLog(fmt.Sprintf("Ação executada com sucesso (%dms)", time.Since(init).Milliseconds()))
+		} else {
+			appendLog(fmt.Sprintf("Falha ao executar ação (%dms)", time.Since(init).Milliseconds()))
+		}
 		updateDeviceList()
 	})
 
