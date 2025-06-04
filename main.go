@@ -41,7 +41,7 @@ func (service ServiceInfo) getAddress() string {
 	return fmt.Sprintf("http://%s:%d/cse-in", service.IP, service.Port)
 }
 
-func findServices(updateCallback func(ServiceInfo)) {
+func findServices(updateCallback func(ServiceInfo), finishCallback func()) {
 	resolver, err := zeroconf.NewResolver(nil)
 	if err != nil {
 		log.Printf("Failed to create resolver: %v", err)
@@ -66,11 +66,14 @@ func findServices(updateCallback func(ServiceInfo)) {
 				updateCallback(service)
 			}
 		}
+		log.Println("Finished browsing for services")
+		finishCallback()
 		cancel() // Clean up when done
 	}()
 
 	// Start discovery (non-blocking)
 	go func() {
+		log.Println("Browsing for services...")
 		resolver.Browse(ctx, "_http._tcp", "local.", entries)
 	}()
 }
@@ -235,6 +238,15 @@ func showErrorDialog(win fyne.Window, app fyne.App, message string) {
 	)
 }
 
+func serviceExists(services []ServiceInfo, newService ServiceInfo) bool {
+	for _, service := range services {
+		if service.Name == newService.Name {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
 	myApp := app.New()
 	window := myApp.NewWindow("Registro Switch AE/Container")
@@ -274,7 +286,7 @@ func main() {
 
 	findDevices := func() {
 		init = time.Now()
-		services = []ServiceInfo{} // Clear existing
+		foundservices := []ServiceInfo{} // Clear existing
 		updateDeviceList()
 		appendLog("Procurando dispositivos...")
 
@@ -282,10 +294,28 @@ func main() {
 		findServices(func(service ServiceInfo) {
 			// This callback runs for each discovered service
 			appendLog(fmt.Sprintf("Dispositivo encontrado: %s (%s:%d) (%d ms)", service.Name, service.IP, service.Port, time.Since(init).Milliseconds()))
-			services = append(services, service)
+			if !serviceExists(services, service) {
+				services = append(services, service)
+			}
+			foundservices = append(foundservices, service)
 			updateDeviceList() // Update UI immediately
+		}, func() { // Finish callback
+			log.Printf("Found %d services", len(foundservices))
+			services = []ServiceInfo{}
+			services = foundservices
+			updateDeviceList()
 		})
 	}
+
+	// Search for devices every 10 seconds
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			findDevices()
+		}
+	}()
 
 	// Initialize application entity and container
 	go func() {
