@@ -23,10 +23,10 @@ import (
 
 const (
 	ACME_SERVER_URL           = "http://localhost:8080/cse-in"
-	APPLICATION_ENTITY_NAME   = "Smart-Switch"
+	APPLICATION_ENTITY_NAME   = "SmartSwitch"
 	CONTAINER_NAME            = "Status"
 	ORIGINATOR                = "CAdmin2"
-	TARGET_APPLICATION_ENTITY = "Light-Bulb"
+	TARGET_APPLICATION_ENTITY = "LightBulb"
 	TARGET_CONTAINER          = "Is-On"
 )
 
