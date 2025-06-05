@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -247,6 +249,23 @@ func serviceExists(services []ServiceInfo, newService ServiceInfo) bool {
 	return false
 }
 
+func sortServices(services []ServiceInfo) []ServiceInfo {
+	sort.Slice(services, func(i, j int) bool {
+		return services[i].Name < services[j].Name
+	})
+	return services
+}
+
+func updateSelectedIndex(services []ServiceInfo, selectedLightBulbName string) int {
+	selectedIndex := slices.IndexFunc(services, func(s ServiceInfo) bool { return s.Name == selectedLightBulbName })
+	if selectedIndex == -1 {
+		if len(services) > 0 {
+			selectedIndex = 0
+		}
+	}
+	return selectedIndex
+}
+
 func main() {
 	myApp := app.New()
 	window := myApp.NewWindow("Registro Switch AE/Container")
@@ -284,6 +303,7 @@ func main() {
 		devicesList.Refresh()
 	}
 
+	var selectedLightBulbName string
 	findDevices := func() {
 		init = time.Now()
 		foundservices := []ServiceInfo{} // Clear existing
@@ -296,13 +316,20 @@ func main() {
 			appendLog(fmt.Sprintf("Dispositivo encontrado: %s (%s:%d) (%d ms)", service.Name, service.IP, service.Port, time.Since(init).Milliseconds()))
 			if !serviceExists(services, service) {
 				services = append(services, service)
+				sortServices(services)
+				selectedIndex = updateSelectedIndex(services, selectedLightBulbName)
 			}
 			foundservices = append(foundservices, service)
 			updateDeviceList() // Update UI immediately
 		}, func() { // Finish callback
 			log.Printf("Found %d services", len(foundservices))
+			if selectedIndex != -1 {
+				selectedLightBulbName = services[selectedIndex].Name // preserve selected index
+			}
 			services = []ServiceInfo{}
 			services = foundservices
+			sortServices(services)
+			selectedIndex = updateSelectedIndex(services, selectedLightBulbName)
 			updateDeviceList()
 		})
 	}
@@ -361,7 +388,7 @@ func main() {
 	})
 
 	actionButton := widget.NewButton("Executar Ação", func() {
-		if len(services) <= 0 {
+		if len(services) <= 0 && selectedIndex == -1 {
 			appendLog("Nenhum serviço na lista")
 			return
 		}
