@@ -57,6 +57,9 @@ func findServices(updateCallback func(ServiceInfo), finishCallback func()) {
 	go func() {
 		for entry := range entries {
 			for _, ip := range entry.AddrIPv4 {
+				if !strings.Contains(entry.Instance, "LIGHTBULB") {
+					continue
+				}
 				service := ServiceInfo{
 					Name: entry.Instance,
 					IP:   ip.String(),
